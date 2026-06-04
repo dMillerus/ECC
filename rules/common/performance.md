@@ -53,3 +53,28 @@ If build fails:
 2. Analyze error messages
 3. Fix incrementally
 4. Verify after each fix
+
+## Reasoning Effort Calibration (proactive flagging)
+
+Regardless of the session's current effort / extended-thinking setting, proactively flag
+when a turn's reasoning demand and the configured effort are mismatched. The user should
+not have to detect this alone — meet them halfway.
+
+**Heuristic:** effort ≈ *blast-radius-of-being-wrong* × *ambiguity-of-the-answer*. Flag the
+mismatch in one line; let the user decide whether to change the setting.
+
+- **Raise a flag to bump UP** before high-stakes turns: decisions that propagate across many
+  files (domain models, architecture, security boundaries, API contracts), genuine tradeoffs
+  with no obvious default, synthesis across many inputs, novel/unfamiliar territory, or
+  non-localized debugging. Example: *"This is an architecture-defining turn — consider
+  raising effort to high before I proceed."*
+- **Note overkill (drop DOWN)** when a sustained high setting is being spent on low-blast
+  mechanical execution (file edits, scaffolding, formatting, git, docs) — say it can safely
+  drop to medium.
+- **Escalate reactively** when an answer on a decision that matters reads thin: options
+  without a recommendation, a missed stated constraint, or plausible-but-unverified output.
+  Re-running a turn with more effort is cheap because the conversation context is reused.
+
+Orchestration note: when the deep reasoning is delegated to subagents (parallel research,
+adversarial verification), the main loop can run leaner — flag this so effort is spent where
+it actually changes the outcome.
