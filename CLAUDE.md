@@ -18,7 +18,13 @@ This is a **Claude Code plugin** - a collection of production-ready agents, skil
 ## Running Tests
 
 ```bash
-# Run all tests
+# Full pre-commit gate: validators + catalog/registry checks + tests
+npm run test
+
+# Coverage gate (c8, 80% lines/functions/branches/statements)
+npm run coverage
+
+# Run all tests only (skips validators)
 node tests/run-all.js
 
 # Run individual test files
@@ -26,6 +32,12 @@ node tests/lib/utils.test.js
 node tests/lib/package-manager.test.js
 node tests/hooks/hooks.test.js
 ```
+
+`package.json` declares `packageManager: yarn@4.9.2` for parity with the CI
+matrix (which resolves it via `corepack prepare yarn@stable --activate`).
+Local environments without `yarn`/`corepack` installed are not expected to
+install either globally — `npm run test` and `npm run coverage` run the exact
+same scripts and are verified to pass identically; use npm in that case.
 
 ## Architecture
 

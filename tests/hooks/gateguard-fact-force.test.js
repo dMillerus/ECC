@@ -57,6 +57,22 @@ function writeState(state) {
   fs.writeFileSync(stateFile, JSON.stringify(state), 'utf8');
 }
 
+// GateGuard-disabling controls (GATEGUARD_DISABLED, ECC_GATEGUARD,
+// ECC_DISABLED_HOOKS) are read from the ambient process environment by
+// design (CLAUDE.md documents ECC_GATEGUARD=off as the escape hatch for
+// setup/repair work), and this workspace's own global Claude Code config
+// sets ECC_GATEGUARD=off for every session. That means `...process.env`
+// alone makes these tests inherit whatever the *developer's* session has
+// set, independent of what any individual test intends to exercise. Force
+// a clean, hermetic baseline here so ambient config can never masquerade
+// as a test assertion; tests that want to exercise the disable paths still
+// win by spreading their own `env` override last.
+const HERMETIC_GATE_ENV = {
+  GATEGUARD_DISABLED: '',
+  ECC_GATEGUARD: '',
+  ECC_DISABLED_HOOKS: ''
+};
+
 function runHook(input, env = {}) {
   const rawInput = typeof input === 'string' ? input : JSON.stringify(input);
   const result = spawnSync('node', [
@@ -69,6 +85,7 @@ function runHook(input, env = {}) {
     encoding: 'utf8',
     env: {
       ...process.env,
+      ...HERMETIC_GATE_ENV,
       ECC_HOOK_PROFILE: 'standard',
       GATEGUARD_STATE_DIR: stateDir,
       CLAUDE_SESSION_ID: TEST_SESSION_ID,
@@ -97,6 +114,7 @@ function runBashHook(input, env = {}) {
     encoding: 'utf8',
     env: {
       ...process.env,
+      ...HERMETIC_GATE_ENV,
       ECC_HOOK_PROFILE: 'standard',
       GATEGUARD_STATE_DIR: stateDir,
       CLAUDE_SESSION_ID: TEST_SESSION_ID,
@@ -124,6 +142,7 @@ function parseOutput(stdout) {
 function loadDirectHook(env = {}) {
   delete require.cache[require.resolve(hookScript)];
   Object.assign(process.env, {
+    ...HERMETIC_GATE_ENV,
     GATEGUARD_STATE_DIR: stateDir,
     CLAUDE_SESSION_ID: TEST_SESSION_ID,
     ...env

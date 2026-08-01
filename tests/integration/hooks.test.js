@@ -14,6 +14,22 @@ const os = require('os');
 const { spawn } = require('child_process');
 const REPO_ROOT = path.join(__dirname, '..', '..');
 
+// Hook-gating controls (ECC_DISABLED_HOOKS, ECC_GATEGUARD, GATEGUARD_DISABLED,
+// ECC_HOOK_PROFILE) are read from the ambient process environment by design,
+// but this workspace's own global Claude Code config disables several hooks
+// by default for interactive sessions (see ~/.claude/settings.json). Spreading
+// `...process.env` unmodified means these tests silently inherit whichever
+// hooks the *developer's* session happens to have turned off, independent of
+// what each test intends to exercise. Force a clean baseline so ambient
+// config can never masquerade as a passing assertion; a test that wants to
+// exercise disabled-hook behavior still wins by spreading its own `env`
+// override last.
+const HERMETIC_HOOK_ENV = {
+  ECC_DISABLED_HOOKS: '',
+  ECC_GATEGUARD: '',
+  GATEGUARD_DISABLED: ''
+};
+
 // Test helper
 function _test(name, fn) {
   try {
@@ -50,7 +66,7 @@ async function asyncTest(name, fn) {
 function runHookWithInput(scriptPath, input = {}, env = {}, timeoutMs = 10000) {
   return new Promise((resolve, reject) => {
     const proc = spawn('node', [scriptPath], {
-      env: { ...process.env, ...env },
+      env: { ...process.env, ...HERMETIC_HOOK_ENV, ...env },
       stdio: ['pipe', 'pipe', 'pipe']
     });
 
@@ -109,7 +125,7 @@ function getSessionStartPayload(stdout) {
 function runHookCommand(command, input = {}, env = {}, timeoutMs = 10000) {
   return new Promise((resolve, reject) => {
     const isWindows = process.platform === 'win32';
-    const mergedEnv = { ...process.env, CLAUDE_PLUGIN_ROOT: REPO_ROOT, ...env };
+    const mergedEnv = { ...process.env, ...HERMETIC_HOOK_ENV, CLAUDE_PLUGIN_ROOT: REPO_ROOT, ...env };
     if (Array.isArray(command)) {
       const [program, ...args] = command;
       const proc = spawn(program, args, { env: mergedEnv, stdio: ['pipe', 'pipe', 'pipe'] });

@@ -125,8 +125,14 @@ function main() {
       })
       assert.strictEqual(result.status, 0, result.error?.message || result.stderr)
 
+      // `npm pack --json` has shipped two output shapes across npm
+      // versions: an array of pack results (`[{ files: [...] }]`) on
+      // older npm, and an object keyed by package name
+      // (`{ "<name>": { files: [...] } }`) on npm 12+. Normalize to
+      // whichever entry is present so this assertion holds on either.
       const packOutput = JSON.parse(result.stdout)
-      const packagedPaths = new Set(packOutput[0]?.files?.map((file) => file.path) ?? [])
+      const packEntry = Array.isArray(packOutput) ? packOutput[0] : Object.values(packOutput)[0]
+      const packagedPaths = new Set(packEntry?.files?.map((file) => file.path) ?? [])
 
       for (const requiredPath of [
         "scripts/catalog.js",
