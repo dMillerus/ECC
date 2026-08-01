@@ -241,3 +241,30 @@ jobs:
 
       - name: Run markdownlint
         run: npx markdownlint "agents/**/*.md" "skills/**/*.md" "commands/**/*.md" "rules/**/*.md"
+
+  python:
+    name: Python (llm-abstraction)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          python-version: '3.12'
+          enable-cache: true
+
+      - name: Sync dependencies (incl. dev group)
+        run: uv sync --group dev
+
+      - name: Run ruff
+        run: uv run ruff check src tests
+
+      - name: Run mypy
+        run: uv run mypy src
+
+      - name: Run pytest
+        run: uv run pytest
