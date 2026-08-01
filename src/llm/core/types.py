@@ -3,18 +3,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 
-class Role(str, Enum):
+class Role(StrEnum):
     SYSTEM = "system"
     USER = "user"
     ASSISTANT = "assistant"
     TOOL = "tool"
 
 
-class ProviderType(str, Enum):
+class ProviderType(StrEnum):
     CLAUDE = "claude"
     OPENAI = "openai"
     OLLAMA = "ollama"

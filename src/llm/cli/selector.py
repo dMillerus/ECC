@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import os
 import sys
-from enum import Enum
+from enum import StrEnum
 
 
-class Color(str, Enum):
+class Color(StrEnum):
     RESET = "\033[0m"
     BOLD = "\033[1m"
     GREEN = "\033[92m"

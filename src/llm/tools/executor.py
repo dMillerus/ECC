@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
-from llm.core.interface import ToolExecutionError
-from llm.core.types import LLMInput, LLMOutput, Message, Role, ToolCall, ToolDefinition, ToolResult
-
+from llm.core.interface import LLMProvider
+from llm.core.types import (
+    LLMInput,
+    LLMOutput,
+    Message,
+    Role,
+    ToolCall,
+    ToolDefinition,
+    ToolResult,
+)
 
 ToolFunc = Callable[..., Any]
 
@@ -65,7 +72,7 @@ class ToolExecutor:
 class ReActAgent:
     def __init__(
         self,
-        provider: Any,
+        provider: LLMProvider,
         executor: ToolExecutor,
         max_iterations: int = 10,
     ) -> None:
@@ -88,7 +95,11 @@ class ReActAgent:
 
             output = self.provider.generate(input_copy)
 
-            if not output.has_tool_calls:
+            # Check the underlying list directly (not has_tool_calls) so the
+            # type checker can narrow `output.tool_calls` from
+            # `list[ToolCall] | None` to `list[ToolCall]` below; the two
+            # checks are equivalent since has_tool_calls is bool(tool_calls).
+            if not output.tool_calls:
                 return output
 
             messages.append(

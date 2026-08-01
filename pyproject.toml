@@ -23,16 +23,6 @@ dependencies = [
     "openai>=1.30.0",
 ]
 
-[project.optional-dependencies]
-dev = [
-    "pytest>=8.0",
-    "pytest-asyncio>=0.23",
-    "pytest-cov>=4.1",
-    "pytest-mock>=3.12",
-    "ruff>=0.4",
-    "mypy>=1.10",
-]
-
 [project.urls]
 Homepage = "https://github.com/affaan-m/everything-claude-code"
 Repository = "https://github.com/affaan-m/everything-claude-code"
@@ -64,7 +54,7 @@ exclude_lines = [
 ]
 
 [tool.ruff]
-src-path = ["src"]
+src = ["src"]
 target-version = "py311"
 
 [tool.ruff.lint]
@@ -73,6 +63,16 @@ ignore = ["E501"]
 
 [tool.mypy]
 python_version = "3.11"
-src_paths = ["src"]
+mypy_path = ["src"]
 warn_return_any = true
 warn_unused_ignores = true
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "pytest-cov>=4.1",
+    "pytest-mock>=3.12",
+    "ruff>=0.4",
+    "mypy>=1.10",
+]
