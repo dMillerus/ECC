@@ -3,6 +3,7 @@
 const os = require('os');
 const { repairInstalledStates } = require('./lib/install-lifecycle');
 const { SUPPORTED_INSTALL_TARGETS } = require('./lib/install-manifests');
+const { problemReportLines } = require('./lib/feedback-links');
 
 function showHelp(exitCode = 0) {
   console.log(`
@@ -64,9 +65,13 @@ function printHuman(result) {
   }
 
   console.log(`\nSummary: checked=${result.summary.checkedCount}, ${result.dryRun ? 'planned' : 'repaired'}=${result.dryRun ? result.summary.plannedRepairCount : result.summary.repairedCount}, errors=${result.summary.errorCount}`);
+
+  if (result.summary.errorCount > 0) {
+    console.log(`\n${problemReportLines().join('\n')}`);
+  }
 }
 
-function main() {
+async function main() {
   try {
     const options = parseArgs(process.argv);
     if (options.help) {
@@ -80,6 +85,14 @@ function main() {
       targets: options.targets,
       dryRun: options.dryRun,
     });
+    if (!options.dryRun) {
+      const { reconcileCanonicalInstallStates } = require('./lib/install-state-store-sync');
+      result.installStateProjection = await reconcileCanonicalInstallStates({
+        homeDir: process.env.HOME || os.homedir(),
+        projectRoot: process.cwd(),
+        targets: options.targets,
+      });
+    }
     const hasErrors = result.summary.errorCount > 0;
 
     if (options.json) {

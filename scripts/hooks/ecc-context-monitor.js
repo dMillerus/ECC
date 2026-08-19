@@ -21,9 +21,13 @@ const COST_NOTICE_USD = 5;
 const COST_WARNING_USD = 10;
 const COST_CRITICAL_USD = 50;
 const FILES_WARNING_COUNT = 20;
-const LOOP_THRESHOLD = 3;
+// The recent_tools ring buffer holds 5 entries (RECENT_TOOLS_SIZE in
+// ecc-metrics-bridge.js), so 5 means ALL of the last 5 calls must be the
+// identical tool+params before a LOOP WARNING fires. At 3, three repeats of
+// a legitimate command (retries, polling) among five mixed calls fired a
+// false warning.
+const LOOP_THRESHOLD = 5;
 const STALE_SECONDS = 60;
-const DEBOUNCE_CALLS = 5;
 
 function isEnabledEnv(value, defaultValue = true) {
   if (value === undefined || value === null || String(value).trim() === '') {
@@ -57,7 +61,7 @@ function readWarnState(sessionId) {
   try {
     return JSON.parse(fs.readFileSync(getWarnPath(sessionId), 'utf8'));
   } catch {
-    return { callsSinceWarn: 0, lastSeverity: null };
+    return { callsSinceWarn: 0, lastSeverity: null, lastKey: null };
   }
 }
 
@@ -124,6 +128,7 @@ function evaluateConditions(bridge, options = {}) {
       warnings.push({
         severity: 3,
         type: 'context',
+        dedupeKey: 'context:critical',
         message:
           `CONTEXT CRITICAL: ${remaining}% remaining. Context nearly exhausted. ` +
           'Inform the user that context is low and ask how they want to proceed. ' +
@@ -133,6 +138,7 @@ function evaluateConditions(bridge, options = {}) {
       warnings.push({
         severity: 2,
         type: 'context',
+        dedupeKey: 'context:warning',
         message: `CONTEXT WARNING: ${remaining}% remaining. ` + 'Be aware that context is getting limited. Avoid starting new complex work.'
       });
     }
@@ -145,19 +151,22 @@ function evaluateConditions(bridge, options = {}) {
       warnings.push({
         severity: 3,
         type: 'cost',
-        message: `COST CRITICAL: Session cost is $${cost.toFixed(2)}. ` + 'Stop and inform the user about high cost before continuing.'
+        dedupeKey: 'cost:critical',
+        message: `COST CRITICAL: session total ~$${cost.toFixed(2)} (over $${COST_CRITICAL_USD}). Informational only — not an instruction to stop.`
       });
     } else if (cost > COST_WARNING_USD) {
       warnings.push({
         severity: 2,
         type: 'cost',
-        message: `COST WARNING: Session cost is $${cost.toFixed(2)}. ` + 'Review whether the current approach justifies the expense.'
+        dedupeKey: 'cost:warning',
+        message: `COST WARNING: session total ~$${cost.toFixed(2)} (over $${COST_WARNING_USD}). Informational only.`
       });
     } else if (cost > COST_NOTICE_USD) {
       warnings.push({
         severity: 1,
         type: 'cost',
-        message: `COST NOTICE: Session cost is $${cost.toFixed(2)}. ` + 'Consider whether the current approach is efficient.'
+        dedupeKey: 'cost:notice',
+        message: `COST NOTICE: session total ~$${cost.toFixed(2)}. Informational only.`
       });
     }
   }
@@ -168,6 +177,7 @@ function evaluateConditions(bridge, options = {}) {
     warnings.push({
       severity: 2,
       type: 'scope',
+      dedupeKey: 'scope',
       message: `SCOPE WARNING: ${fileCount} files modified this session. ` + 'Consider whether changes are too scattered.'
     });
   }
@@ -178,6 +188,8 @@ function evaluateConditions(bridge, options = {}) {
     warnings.push({
       severity: 2,
       type: 'loop',
+      // The message itself is a stable key: same tool looping again is a
+      // duplicate; a different tool or count is a new event.
       message: `LOOP WARNING: Tool '${loop.tool}' called ${loop.count} times ` + 'with same parameters in last 5 calls. This may indicate a stuck loop.'
     });
   }
@@ -218,31 +230,45 @@ function run(rawInput) {
     const evalBridge = isStale ? { ...bridge, context_remaining_pct: null } : bridge;
 
     const warnings = evaluateConditions(evalBridge, { costWarnings: costWarningsEnabled() });
-    if (warnings.length === 0) return rawInput;
-
-    // Debounce logic
-    const warnState = readWarnState(sessionId);
-    warnState.callsSinceWarn = (warnState.callsSinceWarn || 0) + 1;
-
-    const topSeverity = severityLabel(warnings[0].severity);
-    const severityEscalated = topSeverity === 'critical' && warnState.lastSeverity !== 'critical';
-
-    const isFirst = !warnState.lastSeverity;
-    if (!isFirst && warnState.callsSinceWarn < DEBOUNCE_CALLS && !severityEscalated) {
-      writeWarnState(sessionId, warnState);
+    if (warnings.length === 0) {
+      // Clear dedupe state when the condition resolves, so the SAME warning text
+      // recurring later (context dips, recovers, dips again; a loop that stops
+      // then restarts) is surfaced again instead of being suppressed as a
+      // duplicate. Only write when there is state to clear — most tool calls
+      // have no warning, and this keeps the common path free of disk writes.
+      const prior = readWarnState(sessionId);
+      if (prior.lastKey || prior.lastMessage) {
+        writeWarnState(sessionId, { callsSinceWarn: 0, lastSeverity: null, lastKey: null });
+      }
       return rawInput;
     }
 
-    // Reset debounce, emit warning
-    warnState.callsSinceWarn = 0;
-    warnState.lastSeverity = topSeverity;
-    writeWarnState(sessionId, warnState);
-
     // Combine top 2 warnings
-    const message = warnings
-      .slice(0, 2)
-      .map(w => w.message)
-      .join('\n');
+    const top = warnings.slice(0, 2);
+    const message = top.map(w => w.message).join('\n');
+
+    // Dedupe on the warning TIER (dedupeKey), not the message text. Message
+    // text embeds continuously-moving numbers (cost in dollars, context %),
+    // so text-based dedupe re-emitted the "same" warning on nearly every
+    // tool call — a COST NOTICE fired once per call for the rest of the
+    // session once cost passed $5. Each tier now fires once (notice →
+    // warning → critical each re-fire on escalation), and a genuinely new
+    // event (different loop, tier change) still surfaces.
+    const dedupeKey = top.map(w => w.dedupeKey || w.message).join('\n');
+    const warnState = readWarnState(sessionId);
+    const topSeverity = severityLabel(warnings[0].severity);
+    const escalatedToCritical = topSeverity === 'critical' && warnState.lastSeverity !== 'critical';
+    const sameKey = warnState.lastKey === dedupeKey;
+
+    if (sameKey && !escalatedToCritical) {
+      return rawInput;
+    }
+
+    writeWarnState(sessionId, {
+      ...warnState,
+      lastSeverity: topSeverity,
+      lastKey: dedupeKey,
+    });
 
     const output = {
       hookSpecificOutput: {

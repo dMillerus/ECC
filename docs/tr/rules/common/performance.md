@@ -7,12 +7,12 @@
 - Pair programming ve kod üretimi
 - Multi-agent sistemlerinde worker agent'lar
 
-**Sonnet 4.6** (En iyi kodlama modeli):
+**Sonnet 5** (En iyi kodlama modeli):
 - Ana geliştirme çalışması
 - Multi-agent iş akışlarını orkestrasyon
 - Karmaşık kodlama görevleri
 
-**Opus 4.5** (En derin akıl yürütme):
+**Opus 5** (En derin akıl yürütme):
 - Karmaşık mimari kararlar
 - Maksimum akıl yürütme gereksinimleri
 - Araştırma ve analiz görevleri
@@ -37,7 +37,7 @@ Extended thinking varsayılan olarak etkindir ve dahili akıl yürütme için 31
 Extended thinking kontrolü:
 - **Toggle**: Option+T (macOS) / Alt+T (Windows/Linux)
 - **Config**: `~/.claude/settings.json` içinde `alwaysThinkingEnabled` ayarla
-- **Budget cap**: `export MAX_THINKING_TOKENS=10000`
+- **Budget cap**: `export MAX_THINKING_TOKENS=10000` (bash) veya `$env:MAX_THINKING_TOKENS = "10000"` (PowerShell)
 - **Verbose mode**: Thinking çıktısını görmek için Ctrl+O
 
 Derin akıl yürütme gerektiren karmaşık görevler için:

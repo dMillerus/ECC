@@ -79,6 +79,54 @@ function runTests() {
   else failed++;
 
   if (
+    test('different edits to the SAME file produce different hashes (no false loop)', () => {
+      const h1 = hashToolCall('Edit', { file_path: 'a.kt', old_string: 'foo', new_string: 'bar' });
+      const h2 = hashToolCall('Edit', { file_path: 'a.kt', old_string: 'baz', new_string: 'qux' });
+      assert.notStrictEqual(h1, h2);
+    })
+  )
+    passed++;
+  else failed++;
+
+  if (
+    test('identical Edit (same file + same change) still hashes the same', () => {
+      const args = { file_path: 'a.kt', old_string: 'foo', new_string: 'bar' };
+      assert.strictEqual(hashToolCall('Edit', args), hashToolCall('Edit', { ...args }));
+    })
+  )
+    passed++;
+  else failed++;
+
+  if (
+    test('long Bash commands diverging only after 160 chars still hash differently', () => {
+      // Shared prefix longer than the old 160-char command slice; the
+      // commands differ only afterwards (heredocs, long one-liners). Hashing
+      // the full command must keep them distinct, otherwise consecutive
+      // different Bash calls look like a stuck loop.
+      const prefix = 'python3 - <<EOF\n' + '# '.repeat(120);
+      const h1 = hashToolCall('Bash', { command: prefix + 'print(1)\nEOF' });
+      const h2 = hashToolCall('Bash', { command: prefix + 'print(2)\nEOF' });
+      assert.notStrictEqual(h1, h2);
+    })
+  )
+    passed++;
+  else failed++;
+
+  if (
+    test('large edits diverging only after 2048 chars still hash differently', () => {
+      // Shared prefix longer than the old HASH_INPUT_LIMIT (2048) truncation
+      // point; the payloads differ only afterwards. Hashing the full payload
+      // (digest truncated, not input) must keep them distinct.
+      const prefix = 'x'.repeat(4000);
+      const h1 = hashToolCall('Write', { file_path: 'big.txt', content: prefix + 'AAA' });
+      const h2 = hashToolCall('Write', { file_path: 'big.txt', content: prefix + 'BBB' });
+      assert.notStrictEqual(h1, h2);
+    })
+  )
+    passed++;
+  else failed++;
+
+  if (
     test('non-file tools hash by stable input to avoid false loop collisions', () => {
       const h1 = hashToolCall('Glob', { pattern: '**/*.js', path: '/repo/a' });
       const h2 = hashToolCall('Glob', { pattern: '**/*.md', path: '/repo/a' });

@@ -6,7 +6,8 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { execFileSync } = require('child_process');
+const { execFileSync, spawnSync } = require('child_process');
+const yaml = require('js-yaml');
 const { applyInstallPlan } = require('../../scripts/lib/install/apply');
 
 const SCRIPT = path.join(__dirname, '..', '..', 'scripts', 'install-apply.js');
@@ -24,6 +25,13 @@ function readJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, 'utf8'));
 }
 
+function readMarkdownFrontmatter(filePath) {
+  const source = fs.readFileSync(filePath, 'utf8');
+  const match = source.match(/^---\n([\s\S]*?)\n---\n/);
+  assert.ok(match, `Expected YAML frontmatter in ${filePath}`);
+  return yaml.load(match[1]);
+}
+
 function run(args = [], options = {}) {
   const homeDir = options.homeDir || process.env.HOME;
   const env = {
@@ -39,6 +47,7 @@ function run(args = [], options = {}) {
       env,
       encoding: 'utf8',
       stdio: ['pipe', 'pipe', 'pipe'],
+      maxBuffer: 4 * 1024 * 1024,
       timeout: options.timeout || DEFAULT_INSTALL_APPLY_TIMEOUT_MS,
     });
 
@@ -49,6 +58,33 @@ function run(args = [], options = {}) {
       stdout: error.stdout || '',
       stderr: error.stderr || error.message || '',
     };
+  }
+}
+
+function runWithGuidedDispatcherFailure(failureMode) {
+  const root = createTempDir('install-apply-guided-failure-');
+  const preloadPath = path.join(root, 'preload.js');
+  const failureMessage = 'guided dispatcher failed\u001b[31m';
+  const replacement = failureMode === 'load'
+    ? `throw new Error(${JSON.stringify(failureMessage)});`
+    : `return { main: () => Promise.reject(new Error(${JSON.stringify(failureMessage)})) };`;
+  fs.writeFileSync(preloadPath, `
+    const Module = require('module');
+    const originalLoad = Module._load;
+    Module._load = function(request, parent, isMain) {
+      if (request === './install-guided' && /install-apply\\.js$/.test(parent?.filename || '')) {
+        ${replacement}
+      }
+      return originalLoad.call(this, request, parent, isMain);
+    };
+  `);
+  try {
+    return spawnSync(process.execPath, ['--require', preloadPath, SCRIPT, '--guided'], {
+      cwd: path.dirname(SCRIPT),
+      encoding: 'utf8',
+    });
+  } finally {
+    cleanup(root);
   }
 }
 
@@ -79,6 +115,15 @@ function runTests() {
     assert.ok(result.stdout.includes('--modules <id,id,...>'));
   })) passed++; else failed++;
 
+  if (test('guided dispatcher reports sanitized load and rejection failures', () => {
+    for (const failureMode of ['load', 'reject']) {
+      const result = runWithGuidedDispatcherFailure(failureMode);
+      assert.strictEqual(result.status, 1);
+      assert.strictEqual(result.stdout, '');
+      assert.strictEqual(result.stderr, 'Error: guided dispatcher failed\n');
+    }
+  })) passed++; else failed++;
+
   if (test('rejects mixing legacy languages with manifest profile flags', () => {
     const result = run(['--profile', 'core', 'typescript']);
     assert.strictEqual(result.code, 1);
@@ -99,8 +144,8 @@ function runTests() {
       assert.ok(fs.existsSync(path.join(claudeRoot, 'commands', 'plan.md')));
       assert.ok(fs.existsSync(path.join(claudeRoot, 'scripts', 'hooks', 'session-end.js')));
       assert.ok(fs.existsSync(path.join(claudeRoot, 'scripts', 'lib', 'utils.js')));
-      assert.ok(fs.existsSync(path.join(claudeRoot, 'skills', 'ecc', 'tdd-workflow', 'SKILL.md')));
-      assert.ok(fs.existsSync(path.join(claudeRoot, 'skills', 'ecc', 'coding-standards', 'SKILL.md')));
+      assert.ok(fs.existsSync(path.join(claudeRoot, 'skills', 'tdd-workflow', 'SKILL.md')));
+      assert.ok(fs.existsSync(path.join(claudeRoot, 'skills', 'coding-standards', 'SKILL.md')));
       assert.ok(fs.existsSync(path.join(claudeRoot, 'plugin.json')));
 
       const statePath = path.join(homeDir, '.claude', 'ecc', 'install-state.json');
@@ -117,6 +162,40 @@ function runTests() {
         )),
         'Should record common rule file operation'
       );
+    } finally {
+      cleanup(homeDir);
+      cleanup(projectDir);
+    }
+  })) passed++; else failed++;
+
+  if (test('rewrites namespaced skill links to the ecc/ rules path (#2340)', () => {
+    const homeDir = createTempDir('install-apply-home-');
+    const projectDir = createTempDir('install-apply-project-');
+
+    try {
+      const result = run(['typescript'], { cwd: projectDir, homeDir });
+      assert.strictEqual(result.code, 0, result.stderr);
+
+      const claudeRoot = path.join(homeDir, '.claude');
+      const skillPath = path.join(claudeRoot, 'skills', 'react-patterns', 'SKILL.md');
+      assert.ok(fs.existsSync(skillPath), 'react-patterns SKILL.md should be installed');
+
+      const content = fs.readFileSync(skillPath, 'utf8');
+      assert.ok(
+        content.includes('../../rules/ecc/react/'),
+        'source-relative rules link should be rewritten for the ecc/ namespace'
+      );
+      assert.ok(
+        !content.includes('](../../rules/react/'),
+        'no un-namespaced ](../../rules/react/ links should remain'
+      );
+
+      // The rewritten link must resolve to a file that actually exists on disk.
+      const linkTarget = path.join(
+        path.dirname(skillPath),
+        '../../rules/ecc/react/hooks.md'
+      );
+      assert.ok(fs.existsSync(linkTarget), 'rewritten link target should exist');
     } finally {
       cleanup(homeDir);
       cleanup(projectDir);
@@ -150,8 +229,7 @@ function runTests() {
       const mcpConfig = readJson(path.join(projectDir, '.cursor', 'mcp.json'));
       assert.strictEqual(hooksConfig.version, 1);
       assert.ok(hooksConfig.hooks.sessionStart, 'Should keep Cursor sessionStart hooks');
-      assert.ok(mcpConfig.mcpServers.github, 'Should install shared MCP servers into Cursor');
-      assert.ok(mcpConfig.mcpServers.context7, 'Should include bundled documentation MCPs');
+      assert.ok(mcpConfig.mcpServers['chrome-devtools'], 'Should install shared MCP servers into Cursor');
 
       const statePath = path.join(projectDir, '.cursor', 'ecc-install-state.json');
       const state = readJson(statePath);
@@ -194,8 +272,7 @@ function runTests() {
 
       const mcpConfig = readJson(path.join(projectDir, '.cursor', 'mcp.json'));
       assert.ok(mcpConfig.mcpServers.custom, 'Should preserve existing custom Cursor MCP servers');
-      assert.ok(mcpConfig.mcpServers.github, 'Should merge bundled GitHub MCP server');
-      assert.ok(mcpConfig.mcpServers.playwright, 'Should merge bundled Playwright MCP server');
+      assert.ok(mcpConfig.mcpServers['chrome-devtools'], 'Should merge the bundled chrome-devtools MCP server');
     } finally {
       cleanup(homeDir);
       cleanup(projectDir);
@@ -210,23 +287,80 @@ function runTests() {
       const result = run(['--target', 'antigravity', 'typescript'], { cwd: projectDir, homeDir });
       assert.strictEqual(result.code, 0, result.stderr);
 
-      assert.ok(fs.existsSync(path.join(projectDir, '.agent', 'rules', 'common-coding-style.md')));
-      assert.ok(fs.existsSync(path.join(projectDir, '.agent', 'rules', 'typescript-testing.md')));
-      assert.ok(fs.existsSync(path.join(projectDir, '.agent', 'workflows', 'plan.md')));
-      assert.ok(fs.existsSync(path.join(projectDir, '.agent', 'skills', 'architect.md')));
+      assert.ok(fs.existsSync(path.join(projectDir, '.agents', 'rules', 'common-coding-style.md')));
+      assert.ok(fs.existsSync(path.join(projectDir, '.agents', 'rules', 'typescript-testing.md')));
+      assert.ok(!fs.existsSync(path.join(projectDir, '.agents', 'rules', 'python-testing.md')));
+      assert.ok(fs.existsSync(path.join(projectDir, '.agents', 'workflows', 'plan.md')));
+      assert.ok(fs.existsSync(path.join(projectDir, '.agents', 'skills', 'tdd-workflow', 'SKILL.md')));
+      assert.ok(fs.existsSync(path.join(projectDir, '.agents', 'agents', 'architect.md')));
+      const tddGuide = readMarkdownFrontmatter(
+        path.join(projectDir, '.agents', 'agents', 'tdd-guide.md')
+      );
+      assert.deepStrictEqual(
+        tddGuide.tools,
+        ['view_file', 'write_to_file', 'replace_file_content', 'run_command', 'grep_search']
+      );
+      assert.strictEqual(tddGuide.model, 'pro');
+      const docsLookup = readMarkdownFrontmatter(
+        path.join(projectDir, '.agents', 'agents', 'docs-lookup.md')
+      );
+      assert.deepStrictEqual(docsLookup.tools, ['view_file', 'grep_search']);
+      const harnessOptimizer = readMarkdownFrontmatter(
+        path.join(projectDir, '.agents', 'agents', 'harness-optimizer.md')
+      );
+      assert.ok(!Object.hasOwn(harnessOptimizer, 'color'), 'Should omit Claude-only color metadata');
 
-      const statePath = path.join(projectDir, '.agent', 'ecc-install-state.json');
+      const statePath = path.join(projectDir, '.agents', 'ecc-install-state.json');
       const state = readJson(statePath);
       assert.strictEqual(state.target.id, 'antigravity-project');
       assert.deepStrictEqual(state.request.legacyLanguages, ['typescript']);
       assert.strictEqual(state.request.legacyMode, true);
-      assert.deepStrictEqual(state.resolution.selectedModules, ['rules-core', 'agents-core', 'commands-core']);
+      assert.deepStrictEqual(
+        state.resolution.selectedModules,
+        [
+          'rules-core',
+          'agents-core',
+          'commands-core',
+          'platform-configs',
+          'skill-unified-memory',
+          'workflow-quality',
+        ]
+      );
       assert.ok(
         state.operations.some(operation => (
-          operation.destinationPath.endsWith(path.join('.agent', 'workflows', 'plan.md'))
+          operation.destinationPath.endsWith(path.join('.agents', 'workflows', 'plan.md'))
         )),
         'Should record manifest command file copy operation'
       );
+    } finally {
+      cleanup(homeDir);
+      cleanup(projectDir);
+    }
+  })) passed++; else failed++;
+
+  if (test('maps legacy language aliases to Antigravity rule namespaces', () => {
+    const homeDir = createTempDir('install-apply-home-');
+    const projectDir = createTempDir('install-apply-project-');
+
+    try {
+      const result = run(
+        ['--target', 'antigravity', 'c', 'go', 'kotlin', 'javascript', 'rails', 'harmonyos'],
+        { cwd: projectDir, homeDir }
+      );
+      assert.strictEqual(result.code, 0, result.stderr);
+
+      const rulesDir = path.join(projectDir, '.agents', 'rules');
+      for (const fileName of [
+        'golang-testing.md',
+        'kotlin-testing.md',
+        'typescript-testing.md',
+        'ruby-testing.md',
+        'arkts-testing.md',
+        'cpp-testing.md',
+      ]) {
+        assert.ok(fs.existsSync(path.join(rulesDir, fileName)), `Expected ${fileName}`);
+      }
+      assert.ok(!fs.existsSync(path.join(rulesDir, 'python-testing.md')));
     } finally {
       cleanup(homeDir);
       cleanup(projectDir);
@@ -332,8 +466,33 @@ function runTests() {
       assert.ok(result.stdout.includes('Mode: manifest'));
       assert.ok(result.stdout.includes('Profile: core'));
       assert.ok(result.stdout.includes('Included components: (none)'));
-      assert.ok(result.stdout.includes('Selected modules: rules-core, agents-core, commands-core, hooks-runtime, platform-configs, workflow-quality'));
+      assert.ok(result.stdout.includes(
+        'Selected modules: rules-core, agents-core, commands-core, hooks-runtime, '
+        + 'platform-configs, skill-unified-memory, workflow-quality'
+      ));
       assert.ok(!fs.existsSync(path.join(homeDir, '.claude', 'ecc', 'install-state.json')));
+    } finally {
+      cleanup(homeDir);
+      cleanup(projectDir);
+    }
+  })) passed++; else failed++;
+
+  if (test('full profile dry-runs include delivery-gate in the install plan', () => {
+    const homeDir = createTempDir('install-apply-home-');
+    const projectDir = createTempDir('install-apply-project-');
+
+    try {
+      const result = run(['--profile', 'full', '--dry-run', '--json'], { cwd: projectDir, homeDir });
+      assert.strictEqual(result.code, 0, result.stderr);
+      const parsed = JSON.parse(result.stdout);
+      assert.strictEqual(parsed.dryRun, true);
+      assert.ok(parsed.plan.selectedModuleIds.includes('workflow-quality'));
+      assert.ok(
+        parsed.plan.operations.some(operation => (
+          String(operation.sourceRelativePath || '').replace(/\\/g, '/').startsWith('skills/delivery-gate/')
+        )),
+        'Full profile dry-run should include the delivery-gate skill'
+      );
     } finally {
       cleanup(homeDir);
       cleanup(projectDir);
@@ -349,7 +508,10 @@ function runTests() {
       assert.strictEqual(result.code, 0, result.stderr);
       assert.ok(result.stdout.includes('Mode: manifest'));
       assert.ok(result.stdout.includes('Profile: minimal'));
-      assert.ok(result.stdout.includes('Selected modules: rules-core, agents-core, commands-core, platform-configs, workflow-quality'));
+      assert.ok(result.stdout.includes(
+        'Selected modules: rules-core, agents-core, commands-core, platform-configs, '
+        + 'skill-unified-memory, workflow-quality'
+      ));
       assert.ok(!result.stdout.includes('hooks-runtime'));
       assert.ok(!fs.existsSync(path.join(homeDir, '.claude', 'ecc', 'install-state.json')));
     } finally {
@@ -407,11 +569,101 @@ function runTests() {
 
       const result = run(['--profile', 'core'], { cwd: projectDir, homeDir });
       assert.strictEqual(result.code, 0, result.stderr);
+      assert.ok(result.stdout.includes('user-owned'), result.stdout);
+      assert.ok(result.stdout.includes('Skipped operations:'), result.stdout);
 
       assert.strictEqual(fs.readFileSync(userRulePath, 'utf8'), '# User custom rule\n');
       assert.strictEqual(fs.readFileSync(userSkillPath, 'utf8'), '# User custom skill\n');
       assert.ok(fs.existsSync(path.join(claudeRoot, 'rules', 'ecc', 'common', 'coding-style.md')));
-      assert.ok(fs.existsSync(path.join(claudeRoot, 'skills', 'ecc', 'tdd-workflow', 'SKILL.md')));
+      assert.ok(fs.existsSync(path.join(claudeRoot, 'skills', 'verification-loop', 'SKILL.md')));
+      const state = readJson(path.join(claudeRoot, 'ecc', 'install-state.json'));
+      assert.ok(!state.operations.some(operation => (
+        operation.destinationPath.startsWith(path.join(claudeRoot, 'skills', 'tdd-workflow'))
+      )));
+    } finally {
+      cleanup(homeDir);
+      cleanup(projectDir);
+    }
+  })) passed++; else failed++;
+
+  if (test('reports applied and skipped user-owned Claude skill operations in JSON', () => {
+    const homeDir = createTempDir('install-apply-home-');
+    const projectDir = createTempDir('install-apply-project-');
+
+    try {
+      const userSkillPath = path.join(
+        homeDir,
+        '.claude',
+        'skills',
+        'tdd-workflow',
+        'SKILL.md'
+      );
+      fs.mkdirSync(path.dirname(userSkillPath), { recursive: true });
+      fs.writeFileSync(userSkillPath, '# User custom skill\n');
+
+      const result = run(['--skills', 'tdd-workflow', '--json'], {
+        cwd: projectDir,
+        homeDir,
+      });
+      assert.strictEqual(result.code, 0, result.stderr);
+
+      const payload = JSON.parse(result.stdout);
+      assert.strictEqual(payload.dryRun, false);
+      assert.ok(payload.result.plannedOperations.length > 0);
+      assert.ok(payload.result.operations.length > 0);
+      assert.ok(payload.result.skippedOperations.length > 0);
+      assert.strictEqual(
+        payload.result.operations.length + payload.result.skippedOperations.length,
+        payload.result.plannedOperations.length
+      );
+      assert.ok(payload.result.skippedOperations.every(operation => (
+        operation.destinationPath.startsWith(path.dirname(userSkillPath))
+      )));
+      assert.ok(!payload.result.operations.some(operation => (
+        operation.destinationPath.startsWith(path.dirname(userSkillPath))
+      )));
+      assert.ok(payload.result.warnings.some(warning => warning.includes('user-owned')));
+      assert.strictEqual(fs.readFileSync(userSkillPath, 'utf8'), '# User custom skill\n');
+    } finally {
+      cleanup(homeDir);
+      cleanup(projectDir);
+    }
+  })) passed++; else failed++;
+
+  if (test('dry-run reports the same user-owned Claude skill conflicts as apply', () => {
+    const homeDir = createTempDir('install-apply-home-');
+    const projectDir = createTempDir('install-apply-project-');
+
+    try {
+      const userSkillRoot = path.join(
+        homeDir,
+        '.claude',
+        'skills',
+        'tdd-workflow'
+      );
+      const userSkillPath = path.join(userSkillRoot, 'SKILL.md');
+      fs.mkdirSync(userSkillRoot, { recursive: true });
+      fs.writeFileSync(userSkillPath, '# User custom skill\n');
+
+      const result = run(
+        ['--skills', 'tdd-workflow', '--dry-run', '--json'],
+        { cwd: projectDir, homeDir }
+      );
+      assert.strictEqual(result.code, 0, result.stderr);
+
+      const payload = JSON.parse(result.stdout);
+      assert.strictEqual(payload.dryRun, true);
+      assert.ok(payload.plan.plannedOperations.length > 0);
+      assert.ok(payload.plan.skippedOperations.length > 0);
+      assert.ok(payload.plan.warnings.some(warning => warning.includes('user-owned')));
+      assert.ok(payload.plan.skippedOperations.every(operation => (
+        operation.destinationPath.startsWith(userSkillRoot)
+      )));
+      assert.ok(!payload.plan.operations.some(operation => (
+        operation.destinationPath.startsWith(userSkillRoot)
+      )));
+      assert.strictEqual(fs.readFileSync(userSkillPath, 'utf8'), '# User custom skill\n');
+      assert.ok(!fs.existsSync(path.join(homeDir, '.claude', 'ecc', 'install-state.json')));
     } finally {
       cleanup(homeDir);
       cleanup(projectDir);
@@ -426,17 +678,28 @@ function runTests() {
       const result = run(['--target', 'antigravity', '--profile', 'core'], { cwd: projectDir, homeDir });
       assert.strictEqual(result.code, 0, result.stderr);
 
-      assert.ok(fs.existsSync(path.join(projectDir, '.agent', 'rules', 'common-coding-style.md')));
-      assert.ok(fs.existsSync(path.join(projectDir, '.agent', 'skills', 'architect.md')));
-      assert.ok(fs.existsSync(path.join(projectDir, '.agent', 'workflows', 'plan.md')));
-      assert.ok(fs.existsSync(path.join(projectDir, '.agent', 'skills', 'tdd-workflow', 'SKILL.md')));
+      assert.ok(fs.existsSync(path.join(projectDir, '.agents', 'rules', 'common-coding-style.md')));
+      assert.ok(
+        fs.existsSync(path.join(projectDir, '.agents', 'rules', 'python-testing.md')),
+        'Manifest profiles should retain broad rule coverage'
+      );
+      assert.ok(fs.existsSync(path.join(projectDir, '.agents', 'agents', 'architect.md')));
+      assert.ok(fs.existsSync(path.join(projectDir, '.agents', 'workflows', 'plan.md')));
+      assert.ok(fs.existsSync(path.join(projectDir, '.agents', 'skills', 'tdd-workflow', 'SKILL.md')));
 
-      const state = readJson(path.join(projectDir, '.agent', 'ecc-install-state.json'));
+      const state = readJson(path.join(projectDir, '.agents', 'ecc-install-state.json'));
       assert.strictEqual(state.request.profile, 'core');
       assert.strictEqual(state.request.legacyMode, false);
       assert.deepStrictEqual(
         state.resolution.selectedModules,
-        ['rules-core', 'agents-core', 'commands-core', 'platform-configs', 'workflow-quality']
+        [
+          'rules-core',
+          'agents-core',
+          'commands-core',
+          'platform-configs',
+          'skill-unified-memory',
+          'workflow-quality'
+        ]
       );
       assert.ok(state.resolution.skippedModules.includes('hooks-runtime'));
       assert.ok(!state.resolution.skippedModules.includes('workflow-quality'));
@@ -484,7 +747,7 @@ function runTests() {
     assert.ok(result.stderr.includes('Unknown install module: ghost-module'));
   })) passed++; else failed++;
 
-  if (test('installs claude hooks without generating settings.json', () => {
+  if (test('installs claude hooks and defaults commit attribution off', () => {
     const homeDir = createTempDir('install-apply-home-');
     const projectDir = createTempDir('install-apply-project-');
 
@@ -494,7 +757,10 @@ function runTests() {
 
       const claudeRoot = path.join(homeDir, '.claude');
       assert.ok(fs.existsSync(path.join(claudeRoot, 'hooks', 'hooks.json')), 'hooks.json should be copied');
-      assert.ok(!fs.existsSync(path.join(claudeRoot, 'settings.json')), 'settings.json should not be created just to install managed hooks');
+      assert.deepStrictEqual(
+        readJson(path.join(claudeRoot, 'settings.json')),
+        { includeCoAuthoredBy: false }
+      );
     } finally {
       cleanup(homeDir);
       cleanup(projectDir);
@@ -545,7 +811,7 @@ function runTests() {
     }
   })) passed++; else failed++;
 
-  if (test('preserves existing settings.json without mutating it during claude install', () => {
+  if (test('preserves existing settings.json while disabling Claude co-author attribution', () => {
     const homeDir = createTempDir('install-apply-home-');
     const projectDir = createTempDir('install-apply-project-');
 
@@ -569,6 +835,7 @@ function runTests() {
 
       const settings = readJson(path.join(claudeRoot, 'settings.json'));
       assert.strictEqual(settings.effortLevel, 'high', 'existing effortLevel should be preserved');
+      assert.strictEqual(settings.includeCoAuthoredBy, false, 'Claude co-author attribution should be disabled by default');
       assert.deepStrictEqual(settings.env, { MY_VAR: '1' }, 'existing env should be preserved');
       assert.deepStrictEqual(
         settings.hooks.UserPromptSubmit,
@@ -660,7 +927,7 @@ function runTests() {
     }
   })) passed++; else failed++;
 
-  if (test('reinstall does not create settings.json when only managed hooks are installed', () => {
+  if (test('reinstall keeps commit attribution disabled when only managed hooks are installed', () => {
     const homeDir = createTempDir('install-apply-home-');
     const projectDir = createTempDir('install-apply-project-');
 
@@ -671,14 +938,17 @@ function runTests() {
       const secondInstall = run(['--profile', 'core'], { cwd: projectDir, homeDir });
       assert.strictEqual(secondInstall.code, 0, secondInstall.stderr);
 
-      assert.ok(!fs.existsSync(path.join(homeDir, '.claude', 'settings.json')));
+      assert.deepStrictEqual(
+        readJson(path.join(homeDir, '.claude', 'settings.json')),
+        { includeCoAuthoredBy: false }
+      );
     } finally {
       cleanup(homeDir);
       cleanup(projectDir);
     }
   })) passed++; else failed++;
 
-  if (test('reinstall leaves pre-existing hook-based settings.json untouched', () => {
+  if (test('reinstall leaves pre-existing hook-based settings.json untouched apart from co-author preference', () => {
     const homeDir = createTempDir('install-apply-home-');
     const projectDir = createTempDir('install-apply-project-');
 
@@ -697,7 +967,62 @@ function runTests() {
       assert.strictEqual(secondInstall.code, 0, secondInstall.stderr);
 
       const afterSecondInstall = readJson(settingsPath);
-      assert.deepStrictEqual(afterSecondInstall, legacySettings);
+      assert.deepStrictEqual(afterSecondInstall, {
+        ...legacySettings,
+        includeCoAuthoredBy: false,
+      });
+    } finally {
+      cleanup(homeDir);
+      cleanup(projectDir);
+    }
+  })) passed++; else failed++;
+
+  if (test('reinstall preserves an explicit includeCoAuthoredBy opt-in', () => {
+    const homeDir = createTempDir('install-apply-home-');
+    const projectDir = createTempDir('install-apply-project-');
+
+    try {
+      const claudeRoot = path.join(homeDir, '.claude');
+      fs.mkdirSync(claudeRoot, { recursive: true });
+      const settingsPath = path.join(claudeRoot, 'settings.json');
+      const customSettings = {
+        includeCoAuthoredBy: true,
+        theme: 'dark',
+      };
+      fs.writeFileSync(settingsPath, JSON.stringify(customSettings, null, 2));
+
+      const install = run(['--profile', 'core'], { cwd: projectDir, homeDir });
+      assert.strictEqual(install.code, 0, install.stderr);
+
+      const afterInstall = readJson(settingsPath);
+      assert.deepStrictEqual(afterInstall, customSettings);
+    } finally {
+      cleanup(homeDir);
+      cleanup(projectDir);
+    }
+  })) passed++; else failed++;
+
+  if (test('reinstall preserves an explicit attribution opt-in', () => {
+    const homeDir = createTempDir('install-apply-home-');
+    const projectDir = createTempDir('install-apply-project-');
+
+    try {
+      const claudeRoot = path.join(homeDir, '.claude');
+      fs.mkdirSync(claudeRoot, { recursive: true });
+      const settingsPath = path.join(claudeRoot, 'settings.json');
+      // `attribution` supersedes `includeCoAuthoredBy` in Claude Code, so writing
+      // the deprecated key here would be dead config that loses to the user's choice.
+      const customSettings = {
+        attribution: { commit: 'Signed-off-by: Someone <someone@example.com>' },
+        theme: 'dark',
+      };
+      fs.writeFileSync(settingsPath, JSON.stringify(customSettings, null, 2));
+
+      const install = run(['--profile', 'core'], { cwd: projectDir, homeDir });
+      assert.strictEqual(install.code, 0, install.stderr);
+
+      const afterInstall = readJson(settingsPath);
+      assert.deepStrictEqual(afterInstall, customSettings);
     } finally {
       cleanup(homeDir);
       cleanup(projectDir);
@@ -825,8 +1150,8 @@ function runTests() {
       const result = run(['--config', configPath], { cwd: projectDir, homeDir });
       assert.strictEqual(result.code, 0, result.stderr);
 
-      assert.ok(fs.existsSync(path.join(homeDir, '.claude', 'skills', 'ecc', 'security-review', 'SKILL.md')));
-      assert.ok(!fs.existsSync(path.join(homeDir, '.claude', 'skills', 'ecc', 'dmux-workflows', 'SKILL.md')));
+      assert.ok(fs.existsSync(path.join(homeDir, '.claude', 'skills', 'security-review', 'SKILL.md')));
+      assert.ok(!fs.existsSync(path.join(homeDir, '.claude', 'skills', 'dmux-workflows', 'SKILL.md')));
 
       const state = readJson(path.join(homeDir, '.claude', 'ecc', 'install-state.json'));
       assert.strictEqual(state.request.profile, 'developer');
@@ -857,8 +1182,8 @@ function runTests() {
       const result = run([], { cwd: projectDir, homeDir });
       assert.strictEqual(result.code, 0, result.stderr);
 
-      assert.ok(fs.existsSync(path.join(homeDir, '.claude', 'skills', 'ecc', 'security-review', 'SKILL.md')));
-      assert.ok(!fs.existsSync(path.join(homeDir, '.claude', 'skills', 'ecc', 'dmux-workflows', 'SKILL.md')));
+      assert.ok(fs.existsSync(path.join(homeDir, '.claude', 'skills', 'security-review', 'SKILL.md')));
+      assert.ok(!fs.existsSync(path.join(homeDir, '.claude', 'skills', 'dmux-workflows', 'SKILL.md')));
 
       const state = readJson(path.join(homeDir, '.claude', 'ecc', 'install-state.json'));
       assert.strictEqual(state.request.profile, 'developer');

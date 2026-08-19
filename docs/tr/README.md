@@ -79,6 +79,14 @@ Bu repository yalnızca ham kodu içerir. Rehberler her şeyi açıklıyor.
 
 ## Yenilikler
 
+### v2.2.0 — Rehberli Çoklu Harness Kurulumu (Ağu 2026)
+
+Claude Code, Codex ve Kimi Code için incelenebilir çoklu harness kurulumu ve eşitlenmiş npm komut girişi eklendi.
+
+### v2.1.0 — Ajan Harness İşletim Sistemi (Haz 2026)
+
+2.0 hattının kararlı sürümü: 261 skill, control-pane altyapısı, MCP envanteri, worktree yaşam döngüsü servisi ve [Discord topluluğu](https://discord.gg/36yGMHGFbR).
+
 ### v2.0.0-rc.1 — Surface Sync, Operatör İş Akışları ve ECC 2.0 Alpha (Nis 2026)
 
 - **Public surface canlı repo ile senkronlandı** — metadata, katalog sayıları, plugin manifest'leri ve kurulum odaklı dokümanlar artık gerçek OSS yüzeyiyle eşleşiyor.
@@ -122,7 +130,7 @@ Bu repository yalnızca ham kodu içerir. Rehberler her şeyi açıklıyor.
 
 ```bash
 # Marketplace ekle
-/plugin marketplace add https://github.com/affaan-m/everything-claude-code
+/plugin marketplace add https://github.com/affaan-m/ECC
 
 # Plugin'i kur
 /plugin install ecc@ecc
@@ -403,7 +411,7 @@ Evet. ECC çapraz platformdur:
 - **Cursor**: `.cursor/` içinde önceden çevrilmiş config'ler. [Cursor IDE Desteği](../../README.md#cursor-ide-support) bölümüne bakın.
 - **OpenCode**: `.opencode/` içinde tam plugin desteği. [OpenCode Desteği](../../README.md#opencode-support) bölümüne bakın.
 - **Codex**: macOS app ve CLI için birinci sınıf destek. PR [#257](https://github.com/affaan-m/everything-claude-code/pull/257)'ye bakın.
-- **Antigravity**: İş akışları, skill'ler ve `.agent/` içinde düzleştirilmiş rule'lar için sıkı entegre kurulum.
+- **Antigravity**: İş akışları, skill'ler ve `.agents/` içinde düzleştirilmiş rule'lar için sıkı entegre kurulum.
 - **Claude Code**: Native — bu birincil hedeftir.
 </details>
 
