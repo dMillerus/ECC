@@ -315,9 +315,16 @@ npm install
 node tests/run-all.js
 ```
 
-`node tests/run-all.js` is the fast inner loop. **It needs `npm install` first** — several
-test files exercise `install-apply.js`, which requires `ajv`, and they fail with
-`Cannot find module 'ajv'` on a fresh clone rather than skipping.
+`node tests/run-all.js` is the fast inner loop (2624 tests, a few minutes). **It needs
+`npm install` first** — several test files exercise `install-apply.js`, which requires `ajv`,
+and they fail with `Cannot find module 'ajv'` on a fresh clone rather than skipping.
+
+On a clean checkout of `main` it is not fully green: 5 tests fail. Two are the count drift
+described below (`agent.yaml commands stay in sync with commands/` and `passes on real project
+catalog counts`), and two are environment-sensitive permission tests that pass only as a
+non-root user (`appendSessionContent returns false when file is read-only (EACCES)` and the
+matching `session-aliases` restore-failure test). Diff your failures against that baseline
+before assuming your branch caused them.
 
 Single files, when you're iterating on one thing:
 
