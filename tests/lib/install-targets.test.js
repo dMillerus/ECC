@@ -71,7 +71,94 @@ function runTests() {
     assert.strictEqual(statePath, path.join(homeDir, '.claude', 'ecc', 'install-state.json'));
   })) passed++; else failed++;
 
-  if (test('plans claude rules and skills under ECC-managed subdirectories', () => {
+  if (test('plans current Kimi Code project instructions, skills, and MCP config under .kimi-code', () => {
+    const repoRoot = path.join(__dirname, '..', '..');
+    const projectRoot = '/workspace/app';
+
+    const plan = planInstallTargetScaffold({
+      target: 'kimi',
+      repoRoot,
+      projectRoot,
+      modules: [
+        {
+          id: 'agents-core',
+          paths: ['.agents', 'agents', 'AGENTS.md'],
+        },
+        {
+          id: 'platform-configs',
+          paths: ['.kimi', '.kimi-code', 'mcp-configs'],
+        },
+        {
+          id: 'workflow-quality',
+          paths: ['skills/tdd-workflow'],
+        },
+      ],
+    });
+
+    assert.strictEqual(plan.adapter.id, 'kimi-project');
+    assert.strictEqual(plan.targetRoot, path.join(projectRoot, '.kimi-code'));
+    assert.strictEqual(
+      plan.installStatePath,
+      path.join(projectRoot, '.kimi-code', 'ecc-install-state.json')
+    );
+    assert.ok(
+      plan.operations.some(operation => (
+        normalizedRelativePath(operation.sourceRelativePath) === '.kimi-code'
+        && operation.destinationPath === path.join(projectRoot, '.kimi-code')
+        && operation.strategy === 'sync-root-children'
+      )),
+      'Should recognize a current native .kimi-code source root without nesting it'
+    );
+    assert.ok(
+      plan.operations.some(operation => (
+        normalizedRelativePath(operation.sourceRelativePath) === 'AGENTS.md'
+        && operation.destinationPath === path.join(projectRoot, '.kimi-code', 'AGENTS.md')
+      )),
+      'Should install project instructions at .kimi-code/AGENTS.md'
+    );
+    assert.ok(
+      plan.operations.some(operation => (
+        normalizedRelativePath(operation.sourceRelativePath) === 'skills/tdd-workflow'
+        && operation.destinationPath === path.join(projectRoot, '.kimi-code', 'skills', 'tdd-workflow')
+      )),
+      'Should install directly discoverable Kimi skills under .kimi-code/skills'
+    );
+    assert.ok(
+      plan.operations.some(operation => (
+        normalizedRelativePath(operation.sourceRelativePath) === '.agents/skills'
+        && operation.destinationPath === path.join(projectRoot, '.kimi-code', 'skills')
+      )),
+      'Should remap ECC Agent Skills into Kimi\'s native skill directory'
+    );
+    assert.ok(
+      plan.operations.some(operation => (
+        operation.kind === 'merge-json'
+        && normalizedRelativePath(operation.sourceRelativePath) === '.mcp.json'
+        && operation.destinationPath === path.join(projectRoot, '.kimi-code', 'mcp.json')
+      )),
+      'Should safely merge the project MCP config at .kimi-code/mcp.json'
+    );
+    assert.ok(
+      plan.operations.every(operation => (
+        operation.destinationPath === plan.targetRoot
+        || operation.destinationPath.startsWith(`${plan.targetRoot}${path.sep}`)
+      )),
+      'Should keep every managed operation inside .kimi-code'
+    );
+  })) passed++; else failed++;
+
+  if (test('Kimi MCP planning requires an explicit ECC source root', () => {
+    assert.throws(
+      () => planInstallTargetScaffold({
+        target: 'kimi',
+        projectRoot: '/workspace/app',
+        modules: [{ id: 'platform-configs', paths: ['mcp-configs'] }],
+      }),
+      /repoRoot is required to plan Kimi MCP configuration/
+    );
+  })) passed++; else failed++;
+
+  if (test('plans namespaced Claude rules and flat discoverable skills', () => {
     const repoRoot = path.join(__dirname, '..', '..');
     const homeDir = '/Users/example';
 
@@ -101,9 +188,9 @@ function runTests() {
     assert.ok(
       plan.operations.some(operation => (
         normalizedRelativePath(operation.sourceRelativePath) === 'skills/tdd-workflow'
-        && operation.destinationPath === path.join(homeDir, '.claude', 'skills', 'ecc', 'tdd-workflow')
+        && operation.destinationPath === path.join(homeDir, '.claude', 'skills', 'tdd-workflow')
       )),
-      'Should install bundled Claude skills under skills/ecc'
+      'Should install bundled Claude skills under skills'
     );
   })) passed++; else failed++;
 
@@ -205,12 +292,6 @@ function runTests() {
         normalizedRelativePath(operation.sourceRelativePath) === 'rules/README.md'
       )),
       'Should not install Cursor README docs as runtime rule files'
-    );
-    assert.ok(
-      !plan.operations.some(operation => (
-        normalizedRelativePath(operation.sourceRelativePath) === 'rules/zh/README.md'
-      )),
-      'Should not flatten localized README docs into Cursor rule files'
     );
   })) passed++; else failed++;
 
@@ -398,7 +479,7 @@ function runTests() {
     );
   })) passed++; else failed++;
 
-  if (test('plans antigravity remaps for workflows, skills, and flat rules', () => {
+  if (test('plans native Antigravity 2.0 rules, workflows, skills, and agents', () => {
     const repoRoot = path.join(__dirname, '..', '..');
     const projectRoot = '/workspace/app';
 
@@ -413,7 +494,11 @@ function runTests() {
         },
         {
           id: 'agents-core',
-          paths: ['agents'],
+          paths: ['.agents', 'agents', 'AGENTS.md'],
+        },
+        {
+          id: 'workflow-quality',
+          paths: ['skills/tdd-workflow'],
         },
         {
           id: 'rules-core',
@@ -425,23 +510,34 @@ function runTests() {
     assert.ok(
       plan.operations.some(operation => (
         operation.sourceRelativePath === 'commands'
-        && operation.destinationPath === path.join(projectRoot, '.agent', 'workflows')
+        && operation.destinationPath === path.join(projectRoot, '.agents', 'workflows')
       )),
       'Should remap commands into workflows'
     );
     assert.ok(
       plan.operations.some(operation => (
         operation.sourceRelativePath === 'agents'
-        && operation.destinationPath === path.join(projectRoot, '.agent', 'skills')
+        && operation.destinationPath === path.join(projectRoot, '.agents', 'agents')
       )),
-      'Should remap agents into skills'
+      'Should remap agents into native agents'
+    );
+    assert.ok(
+      plan.operations.some(operation => (
+        operation.sourceRelativePath === 'skills/tdd-workflow'
+        && operation.destinationPath === path.join(projectRoot, '.agents', 'skills', 'tdd-workflow')
+      )),
+      'Should remap canonical skills into native skills'
     );
     assert.ok(
       plan.operations.some(operation => (
         normalizedRelativePath(operation.sourceRelativePath) === 'rules/common/coding-style.md'
-        && operation.destinationPath === path.join(projectRoot, '.agent', 'rules', 'common-coding-style.md')
+        && operation.destinationPath === path.join(projectRoot, '.agents', 'rules', 'common-coding-style.md')
       )),
       'Should flatten common rules for antigravity'
+    );
+    assert.ok(
+      plan.operations.every(operation => !['.agents', 'AGENTS.md'].includes(operation.sourceRelativePath)),
+      'Should exclude Codex-only .agents metadata and root AGENTS.md'
     );
   })) passed++; else failed++;
 
@@ -890,7 +986,7 @@ function runTests() {
     assert.ok(byTarget.supports('claude-project'));
   })) passed++; else failed++;
 
-  if (test('plans claude-project rules and skills under project-scope ECC-managed subdirectories', () => {
+  if (test('plans project-scoped namespaced Claude rules and flat skills', () => {
     const repoRoot = path.join(__dirname, '..', '..');
     const projectRoot = '/workspace/app';
 
@@ -923,9 +1019,9 @@ function runTests() {
     assert.ok(
       plan.operations.some(operation => (
         normalizedRelativePath(operation.sourceRelativePath) === 'skills/tdd-workflow'
-        && operation.destinationPath === path.join(projectRoot, '.claude', 'skills', 'ecc', 'tdd-workflow')
+        && operation.destinationPath === path.join(projectRoot, '.claude', 'skills', 'tdd-workflow')
       )),
-      'Should install bundled skills under project-scope skills/ecc'
+      'Should install bundled skills under project-scope skills'
     );
   })) passed++; else failed++;
 
@@ -1091,6 +1187,75 @@ function runTests() {
       assert.deepStrictEqual(issues, [], 'Should not surface validation issues when plugin is built');
     } finally {
       fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  })) passed++; else failed++;
+
+  if (test('planInstallTargetScaffold only exempts explicitly allowed validation codes', () => {
+    const registryPath = require.resolve('../../scripts/lib/install-targets/registry');
+    const opencodeHomePath = require.resolve('../../scripts/lib/install-targets/opencode-home');
+    const originalRegistryEntry = require.cache[registryPath];
+    const originalOpencodeHomeEntry = require.cache[opencodeHomePath];
+    const repoRoot = path.join(__dirname, '..', '..');
+    const homeDir = '/Users/example';
+
+    try {
+      delete require.cache[registryPath];
+      require.cache[opencodeHomePath] = {
+        id: opencodeHomePath,
+        filename: opencodeHomePath,
+        loaded: true,
+        exports: {
+          id: 'opencode-home',
+          target: 'opencode',
+          kind: 'home',
+          supports: target => target === 'opencode',
+          resolveRoot: input => path.join((input.homeDir || '/Users/example'), '.opencode'),
+          getInstallStatePath: input => path.join((input.homeDir || '/Users/example'), '.opencode', 'ecc-install-state.json'),
+          validate: () => ([
+            { severity: 'error', code: 'opencode-plugin-not-built', message: 'missing payload' },
+            { severity: 'error', code: 'opencode-other-blocker', message: 'still blocked' },
+          ]),
+          planOperations: () => [],
+        },
+      };
+
+      const { planInstallTargetScaffold: sandboxedPlanInstallTargetScaffold } = require('../../scripts/lib/install-targets/registry');
+
+      assert.throws(
+        () => sandboxedPlanInstallTargetScaffold({
+          target: 'opencode',
+          repoRoot,
+          homeDir,
+          exemptValidationCodes: ['opencode-plugin-not-built'],
+        }),
+        /still blocked/
+      );
+
+      require.cache[opencodeHomePath].exports.validate = () => ([
+        { severity: 'error', code: 'opencode-plugin-not-built', message: 'missing payload' },
+      ]);
+
+      const plan = sandboxedPlanInstallTargetScaffold({
+        target: 'opencode',
+        repoRoot,
+        homeDir,
+        exemptValidationCodes: ['opencode-plugin-not-built'],
+      });
+
+      assert.strictEqual(plan.adapter.id, 'opencode-home');
+      assert.deepStrictEqual(plan.operations, []);
+    } finally {
+      if (originalOpencodeHomeEntry) {
+        require.cache[opencodeHomePath] = originalOpencodeHomeEntry;
+      } else {
+        delete require.cache[opencodeHomePath];
+      }
+
+      if (originalRegistryEntry) {
+        require.cache[registryPath] = originalRegistryEntry;
+      } else {
+        delete require.cache[registryPath];
+      }
     }
   })) passed++; else failed++;
 

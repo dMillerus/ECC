@@ -37,6 +37,29 @@ function parseAccumulator(raw) {
   return [...new Set(raw.split('\n').map(l => l.trim()).filter(Boolean))];
 }
 
+/**
+ * Is this file part of an installed plugin or marketplace clone?
+ *
+ * Those trees are third-party checkouts we merely read. Formatting them writes
+ * to code the user does not own, and when a repo's committed code has drifted
+ * from its own formatter config the rewrite is large: an unrelated bugfix ends
+ * up carrying hundreds of reformatted lines it never touched, which is enough
+ * to sink the contribution it was meant to support.
+ *
+ * Checks both a project-local install root and the user-level one, mirroring
+ * the lookup in scripts/harness-audit.js.
+ */
+function isPluginClonePath(filePath, cwd = process.cwd(), homeDir = os.homedir()) {
+  const resolved = path.resolve(filePath);
+  const roots = [path.join(cwd, '.claude', 'plugins')];
+  if (homeDir) roots.push(path.join(homeDir, '.claude', 'plugins'));
+
+  return roots.some(root => {
+    const rel = path.relative(root, resolved);
+    return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+  });
+}
+
 function getAccumFile() {
   const raw =
     process.env.CLAUDE_SESSION_ID ||
@@ -151,6 +174,7 @@ function main() {
   const byProjectRoot = new Map();
   for (const filePath of files) {
     if (!/\.(ts|tsx|js|jsx)$/.test(filePath)) continue;
+    if (isPluginClonePath(filePath)) continue;
     const resolved = path.resolve(filePath);
     if (!fs.existsSync(resolved)) continue;
     const root = findProjectRoot(path.dirname(resolved));
@@ -161,6 +185,7 @@ function main() {
   const byTsConfigDir = new Map();
   for (const filePath of files) {
     if (!/\.(ts|tsx)$/.test(filePath)) continue;
+    if (isPluginClonePath(filePath)) continue;
     const resolved = path.resolve(filePath);
     if (!fs.existsSync(resolved)) continue;
     const tsDir = findTsConfigDir(resolved);
@@ -196,14 +221,31 @@ function run(rawInput) {
 
 if (require.main === module) {
   let stdinData = '';
+  let truncated = false;
   process.stdin.setEncoding('utf8');
   process.stdin.on('data', chunk => {
-    if (stdinData.length < MAX_STDIN) stdinData += chunk.substring(0, MAX_STDIN - stdinData.length);
+    if (stdinData.length < MAX_STDIN) {
+      const remaining = MAX_STDIN - stdinData.length;
+      stdinData += chunk.substring(0, remaining);
+      if (chunk.length > remaining) truncated = true;
+    } else {
+      truncated = true;
+    }
   });
   process.stdin.on('end', () => {
-    process.stdout.write(run(stdinData));
-    process.exit(0);
+    const output = run(stdinData);
+    // Never echo truncated stdin (invalid JSON would be reported as a Stop
+    // hook failure, #2090); flush stdout before exiting so large payloads
+    // are not cut at the pipe buffer.
+    if (truncated) {
+      process.stderr.write('[Hook] stop-format-typecheck: stdin exceeded 1MB; suppressing pass-through (fail-open)\n');
+      process.exit(0);
+    }
+    if (!output) {
+      process.exit(0);
+    }
+    process.stdout.write(output, () => process.exit(0));
   });
 }
 
-module.exports = { run, parseAccumulator };
+module.exports = { run, parseAccumulator, isPluginClonePath };
